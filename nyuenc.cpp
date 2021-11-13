@@ -102,8 +102,8 @@ string compress_string(const char* str, int n){
     for (int i = 0; i < n; i++) {
  		
         // Count occurrences of current character
-        //unsigned char count = 1;
-        int count = 1; // for easier debug
+        unsigned char count = 1;
+        //int count = 1; // for easier debug
         while (i < n - 1 && str[i] == str[i + 1]) {
             count++;
             i++;
@@ -112,7 +112,8 @@ string compress_string(const char* str, int n){
         //cout << count;
         //cout << count;
  		res+= str[i];
- 		res+= to_string(count); // add to string when having int for debug
+ 		res+= count;
+ 		//res+= to_string(count); // add to string when having int for debug
  		
  		//res+=count;
     }
@@ -255,6 +256,40 @@ void* start_thread(void* args){
 	//return (void*)encoded_slice;
 }
 
+string stitching(string str1, string str2){
+	/*concatenate str1 with str2 in a correct encoded format*/
+	string res = "";
+	if(str1.length() == 0) return str2;
+
+	// find start and end to stitch
+	
+	int end = 0;
+	int count = 0;
+	for(end = 0; end < str2.length(); end++){
+		if(isalpha(str2[end])) count++;
+		if(count > 1) break;
+	}
+
+	string toStich = str2.substr(0, end);
+
+	// append to the carry the correct count
+	if((isalpha(str1[0]) && isalpha(toStich[0])) && (str1[0] != toStich[0])){
+		// Not same character between carry and toStich (ex: a2 and b2) => we can safely concatenate both
+		res += (str1 + str2);
+	}
+	else if(isalpha(str1[0]) && isalpha(toStich[0])){
+		// equal
+		res += str1[0]; // add first char
+		int count1 = stoi(str1.substr(1));
+		int count2 = stoi(toStich.substr(1));
+		res += to_string(count1 + count2);
+		res+= str2.substr(end); // add the rest
+	}
+
+	return res;
+
+}
+
 int main(int argc, char** argv){
 	if(argc < 2){
 		fprintf(stderr, "Not enough arguments passed. [Usage]: ./nyuenc file1.text [file2.txt]\n");
@@ -315,25 +350,32 @@ int main(int argc, char** argv){
 		}
 		
 		ResTask resTask = map[taskCounter];
-		
-		// take everything until last char
-		int lastChar = resTask.encStr.length() - 1;
-		cout << resTask.encStr << " ";
-		while(lastChar >= 0 && !isalpha(resTask.encStr[lastChar])) lastChar--; // find last char
 
+		// stitch with carry
+		string stitched = stitching(carry, resTask.encStr);
+		
+		// Update the carry take everything until last char
+		int lastChar = stitched.length() - 1;
+		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
+		carry = stitched.substr(lastChar, resTask.encStr.length()); // add the rest
 		//finalRes+= carry + resultQueue.front().slice.substr(0, lastChar); // excludes the last char (at start carry is empty)
 		for(int i = 0; i < lastChar; i++){
-			cout << carry << resTask.encStr[i];
+			cout << stitched[i];
 		}
-		cout << endl;
+		
 		//cout.flush();
-		carry = resTask.encStr.substr(lastChar, resTask.encStr.length()); // add the rest
+		//carry = resTask.encStr.substr(lastChar, resTask.encStr.length()); // add the rest
 		map.erase(taskCounter);
 		taskCounter++;
 		pthread_mutex_unlock(&mutexResQ);
 
 	}
 
+	if(carry.length() != 0){
+		// carry is not empty just display it
+		cout << carry;
+	}
+	cout.flush();
 	// Join threads
 	for(int i = 0; i < THREAD_NUM; i++){
 		if(pthread_join(th[i], NULL) != 0){
