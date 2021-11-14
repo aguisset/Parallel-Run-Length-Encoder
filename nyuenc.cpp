@@ -256,13 +256,14 @@ void* start_thread(void* args){
 	//return (void*)encoded_slice;
 }
 
-string stitching(string str1, string str2){
+string stitch(string str1, string str2){
 	/*concatenate str1 with str2 in a correct encoded format*/
 	string res = "";
+
 	if(str1.length() == 0) return str2;
 
 	// find start and end to stitch
-	
+
 	int end = 0;
 	int count = 0;
 	for(end = 0; end < str2.length(); end++){
@@ -280,9 +281,10 @@ string stitching(string str1, string str2){
 	else if(isalpha(str1[0]) && isalpha(toStich[0])){
 		// equal
 		res += str1[0]; // add first char
-		int count1 = stoi(str1.substr(1));
-		int count2 = stoi(toStich.substr(1));
-		res += to_string(count1 + count2);
+		//int count1 = stoi(str1.substr(1));
+		//int count2 = stoi(toStich.substr(1));
+		//res += to_string(count1 + count2);
+		res += str1[1] + str2[1]; // since it is stored as a 1 byte char
 		res+= str2.substr(end); // add the rest
 	}
 
@@ -351,14 +353,16 @@ int main(int argc, char** argv){
 		
 		ResTask resTask = map[taskCounter];
 
+
 		// stitch with carry
-		string stitched = stitching(carry, resTask.encStr);
+		string stitched = stitch(carry, resTask.encStr);
 		
 		// Update the carry take everything until last char
 		int lastChar = stitched.length() - 1;
 		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
 		carry = stitched.substr(lastChar, resTask.encStr.length()); // add the rest
 		//finalRes+= carry + resultQueue.front().slice.substr(0, lastChar); // excludes the last char (at start carry is empty)
+
 		for(int i = 0; i < lastChar; i++){
 			cout << stitched[i];
 		}
