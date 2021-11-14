@@ -16,10 +16,9 @@
 #define FILES_MAX_COUNT 100
 #define FIXED_SIZE_CHUNKS 4000
 
-
-
 using namespace std;
 
+/*Structures definition*/
 typedef struct ResTask{
 	int taskId;
 	string encStr;
@@ -37,27 +36,34 @@ typedef struct MappedFile{
 	const char* startAddr;
 }MappedFile;
 
+void slice_by_char(vector<MappedFile> fileList, int split_length);
+string compress_string(const char* str, int n);
+MappedFile memory_map_helper(char* file_name);
+vector<MappedFile> build_file_list(char** argv, int argc, const int THREAD_NUM);
 void submitTask(Task task);
+void submitRes(ResTask subRes);
+void* start_thread(void* args);
+string stitch(string str1, string str2);
+void run_sequentially(char** argv, int argc, const int THREAD_NUM);
+int get_thread_number_from_cmdl(char** argv, int argc);
 
-
+/*Global variables*/
+// mutexes
 pthread_mutex_t mutexQueue;
-pthread_mutex_t mutexResQ;
+pthread_mutex_t mutexResMap;
 pthread_cond_t condQueue;
 pthread_cond_t condResQueue;
-
 
 
 queue<Task> taskQueue; // will hold file chunk
 vector<ResTask> resultVec;
 unordered_map<int, ResTask> map; // keep taskId-> ResTask
-
 int taskCounter = 0;
 int timestamp = 0;
 
 void slice_by_char(vector<MappedFile> fileList, int split_length){
 	/*Given a list of mapped file object (startAddr and size of each file mmaped) break each files into chunks of split length*/
 	// slice by X char the input string [3]
-	// Executed by main thread
 	timestamp = 0;
 	for(MappedFile mappedFile: fileList){
 		int substring_count = mappedFile.size / split_length;
@@ -84,12 +90,10 @@ void slice_by_char(vector<MappedFile> fileList, int split_length){
 				.length = static_cast<int>(mappedFile.size % split_length)
 				//.slice = str.substr(split_length * substring_count)
 			};
-			
 			submitTask(task);
 			substring_count++;
 		}
 	}
-	
 
 	return;
 }
@@ -100,7 +104,6 @@ string compress_string(const char* str, int n){
 	const char* encoded;
 	string res = "";
     for (int i = 0; i < n; i++) {
- 		
         // Count occurrences of current character
         unsigned char count = 1;
         //int count = 1; // for easier debug
@@ -114,7 +117,7 @@ string compress_string(const char* str, int n){
  		res+= str[i];
  		res+= count;
  		//res+= to_string(count); // add to string when having int for debug
- 		
+
  		//res+=count;
     }
     
@@ -129,7 +132,7 @@ MappedFile memory_map_helper(char* file_name){
 	 * Open one file and map it to memory
 	 * 
 	 */
-	
+
 	off_t file_size = 0;
 	int fd;
 	struct stat sb;
@@ -147,11 +150,10 @@ MappedFile memory_map_helper(char* file_name){
 		fprintf(stderr, "Error: fstat failed\n");
 		exit(1);
 	}
-	//printf("File size is %lld\n", sb.st_size); // for debug
-	
+
 	// call mmap with the size of my file
 	const char* file_in_memory = static_cast<const char*> (mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
-	
+
 	if(file_in_memory == MAP_FAILED){
 		fprintf(stderr, "Error: mmap failed");
 		exit(1);
@@ -161,12 +163,6 @@ MappedFile memory_map_helper(char* file_name){
 		.size = sb.st_size,
 		.startAddr = file_in_memory
 	};
-	
-	//printf("Orginal file: "); // for debug
-	//print_file(file_in_memory, sb.st_size); // for debug
-
-	// do what you want with file
-	//const char* encoded = compress_string(file_in_memory, sb.st_size);
 
 	//munmap(&file_in_memory, sb.st_size);
 	close(fd);
@@ -174,34 +170,26 @@ MappedFile memory_map_helper(char* file_name){
 
 }
 
-vector<MappedFile> build_file_list(char** argv, int argc){
+vector<MappedFile> build_file_list(char** argv, int argc, const int THREAD_NUM){
 	/**
 	 * 
 	 *  Wrapper function that returns mappedFileList
 	 * */
 	vector<MappedFile> list;
-	for(int i = 1; i < argc; i++){
-		list.push_back(memory_map_helper(argv[i]));
+	if(THREAD_NUM == -1){
+		for(int i = 1; i < argc; i++){
+			list.push_back(memory_map_helper(argv[i]));
+		}
+	}
+	else{
+		for(int i = 3; i < argc; i++){
+			list.push_back(memory_map_helper(argv[i]));
+		}
 	}
 
-	//const char* str_to_encode = str.c_str();
-	//compress_string(str_to_encode, str.length());
 	return list;
 }
 
-/*
-string concatenate(char** argv, int argc){
-	
-	string str = "";
-	for(int i = 1; i < argc; i++){
-		str += memory_map_helper(argv[i]);
-	}
-
-	//const char* str_to_encode = str.c_str();
-	//compress_string(str_to_encode, str.length());
-	return str;
-}
-*/
 void submitTask(Task task){
 	// Submit a new slice of string to the queue
 	pthread_mutex_lock(&mutexQueue);// to avoid race conditions
@@ -210,11 +198,11 @@ void submitTask(Task task){
 	pthread_cond_signal(&condQueue);
 }
 void submitRes(ResTask subRes){
-	pthread_mutex_lock(&mutexResQ);// to avoid race conditions
+	pthread_mutex_lock(&mutexResMap);// to avoid race conditions
 	//resultVec.push_back(subRes);
 	map[subRes.taskId] = subRes;
 	//cout << subRes.taskId << " " << map[subRes.taskId].encStr << endl; // for debug
-	pthread_mutex_unlock(&mutexResQ);
+	pthread_mutex_unlock(&mutexResMap);
 	pthread_cond_signal(&condResQueue);
 }
 void* start_thread(void* args){
@@ -230,30 +218,16 @@ void* start_thread(void* args){
 		while(taskQueue.size() == 0){
 			pthread_cond_wait(&condQueue, &mutexQueue);
 		}
-		
+
 		task =taskQueue.front();
-		//slice = taskQueue.front();
 		taskQueue.pop();
-		
 
 		// execute the task
-		//const char* str_to_encode = slice.c_str();
 		resTask.taskId = task.taskId;
 		resTask.encStr = compress_string(task.startAddr, task.length);
-		//strncpy(encoded_slice, compress_string(str_to_encode, slice.length()), FIXED_SIZE_CHUNKS*sizeof(char));
-		//strncpy(encoded_slice,compress_string(str_to_encode, slice.length()), FIXED_SIZE_CHUNKS*sizeof(char));
-		//strncpy(encoded_slice, "abdoul", FIXED_SIZE_CHUNKS*sizeof(char)); // for debug
-		//cout << "encoded slice: " << resTask.encStr << endl;// for debug
-		//cout.flush(); // for debug
-		//submitRes(string(encoded_slice));
 		submitRes(resTask);
-		//cout << encoded_slice << endl;
 		pthread_mutex_unlock(&mutexQueue);
 	}
-	
-	
-	//if(slice_count == 0) pthread_exit(NULL);
-	//return (void*)encoded_slice;
 }
 
 string stitch(string str1, string str2){
@@ -281,9 +255,6 @@ string stitch(string str1, string str2){
 	else if(isalpha(str1[0]) && isalpha(toStich[0])){
 		// equal
 		res += str1[0]; // add first char
-		//int count1 = stoi(str1.substr(1));
-		//int count2 = stoi(toStich.substr(1));
-		//res += to_string(count1 + count2);
 		res += str1[1] + str2[1]; // since it is stored as a 1 byte char
 		res+= str2.substr(end); // add the rest
 	}
@@ -292,24 +263,75 @@ string stitch(string str1, string str2){
 
 }
 
+void run_sequentially(char** argv, int argc, const int THREAD_NUM){
+	/*Perfom RLE sequentially*/
+	vector<MappedFile> file_list;
+	file_list = build_file_list(argv, argc, THREAD_NUM);
+	string res = "";
+	string carry = "";
+	for(MappedFile file: file_list){
+		string stitched = stitch(carry,compress_string(file.startAddr, file.size));
+
+		// find last char
+		int lastChar = stitched.length() - 1;
+		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
+		carry = stitched.substr(lastChar, stitched.length()); // add the rest
+
+		for(int i = 0; i < lastChar; i++){
+			cout << stitched[i];
+		}
+		cout.flush();
+	}
+
+	if(carry.length() != 0){
+		// carry is not empty just display it
+		cout << carry;
+	}
+	cout.flush();
+
+	return;
+}
+
+int get_thread_number_from_cmdl(char** argv, int argc){
+	/*Retrives command line options [4]*/
+    int opt;
+
+    while((opt = getopt(argc, argv, "j:")) != -1){ // as long as there is an option
+        switch(opt){
+            case 'j':
+                return atoi(optarg);
+            default:
+                if(optopt == 'j')
+                    fprintf(stderr, "Option -%c requires an argument.\n", optopt);
+                break;
+        }
+    }
+
+    return -1; // no such option
+}
+
+
 int main(int argc, char** argv){
 	if(argc < 2){
 		fprintf(stderr, "Not enough arguments passed. [Usage]: ./nyuenc file1.text [file2.txt]\n");
 		exit(1);
 	}
 
+	// Step 1: Retrieve element from command line and concatenate all files string
+	const int THREAD_NUM = get_thread_number_from_cmdl(argv, argc); // retrieve thread Number from command line
+
+	if(THREAD_NUM == -1){
+		run_sequentially(argv, argc, THREAD_NUM);
+		return 0;
+	}
+
 	// init
 	pthread_mutex_init(&mutexQueue, NULL);
-	pthread_mutex_init(&mutexResQ, NULL);
+	pthread_mutex_init(&mutexResMap, NULL);
 	pthread_cond_init(&condQueue, NULL);
 	pthread_cond_init(&condResQueue, NULL);
-	
-	// Step 1: Retrieve element from command line and concatenate all files string
-	const int THREAD_NUM = 2; // retrieve thread Number from command line
-	//char** res = NULL;
+
 	vector<MappedFile> file_list;
-	char* res = NULL;
-	string finalRes = "";
 	string carry = "";
 
 	// Step 2: Create threads
@@ -321,38 +343,17 @@ int main(int argc, char** argv){
 			exit(1);
 		}
 	}
-	// get parameter from command line: E.g ./nyuenc file.txt file2.txt
-	//encode(argv, argc);
-	// perform the encoding: aaabbb -> a3b3 where 3 is encoded a one byte unsigned integer (unsigned char)
 
-	//string string_to_encode(concatenate(argv, argc)); // we can change that steps later on to send each file to a thread
-	file_list = build_file_list(argv, argc);
-	//cout << "concatenated string is: " << string_to_encode << endl; // for debug (works for string)
-	//submitTask(string_to_encode); // add the slice to the queue
-	slice_by_char(file_list, 2);
-	//cout << "slice count: " << count << endl; // for debug
-	//char** res = (char**) malloc(count*sizeof(char*));
+	file_list = build_file_list(argv, argc, THREAD_NUM);
+	slice_by_char(file_list, FIXED_SIZE_CHUNKS);
 
-	/* 
-	//Checking Task Queue Status (for debug)
-	cout << "TaskQueue: " << endl;
-	while(!taskQueue.empty()){
-		cout << taskQueue.front() << " ";
-		taskQueue.pop();
-	}
-	cout << endl;
-
-	*/
-	// return all res
-	
 	while(taskCounter != timestamp){
-		pthread_mutex_lock(&mutexResQ);
+		pthread_mutex_lock(&mutexResMap);
 		while(map.find(taskCounter) == map.end()){ // Wait until the element with id equal to taskCounter is added in the map
-			pthread_cond_wait(&condResQueue, &mutexResQ);
+			pthread_cond_wait(&condResQueue, &mutexResMap);
 		}
-		
-		ResTask resTask = map[taskCounter];
 
+		ResTask resTask = map[taskCounter];
 
 		// stitch with carry
 		string stitched = stitch(carry, resTask.encStr);
@@ -360,19 +361,15 @@ int main(int argc, char** argv){
 		// Update the carry take everything until last char
 		int lastChar = stitched.length() - 1;
 		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
-		carry = stitched.substr(lastChar, resTask.encStr.length()); // add the rest
-		//finalRes+= carry + resultQueue.front().slice.substr(0, lastChar); // excludes the last char (at start carry is empty)
+		carry = stitched.substr(lastChar, stitched.length()); // add the rest
 
 		for(int i = 0; i < lastChar; i++){
 			cout << stitched[i];
 		}
-		
-		//cout.flush();
-		//carry = resTask.encStr.substr(lastChar, resTask.encStr.length()); // add the rest
+
 		map.erase(taskCounter);
 		taskCounter++;
-		pthread_mutex_unlock(&mutexResQ);
-
+		pthread_mutex_unlock(&mutexResMap);
 	}
 
 	if(carry.length() != 0){
@@ -380,23 +377,15 @@ int main(int argc, char** argv){
 		cout << carry;
 	}
 	cout.flush();
-	// Join threads
-	for(int i = 0; i < THREAD_NUM; i++){
-		if(pthread_join(th[i], NULL) != 0){
-			fprintf(stderr, "Error: Threads could not be joined\n");
-			exit(1);
-		}
-	}
-
 	
+	// Join threads (not required)
 
 	pthread_mutex_destroy(&mutexQueue);
-	pthread_mutex_destroy(&mutexResQ);
+	pthread_mutex_destroy(&mutexResMap);
 	pthread_cond_destroy(&condQueue);
 	pthread_cond_destroy(&condResQueue);
-	// free what has been dynamically allocated in the thread
-	if(res != NULL)
-		free(res);
+
+	// free-ing
 
 	return 0;
 }
@@ -406,4 +395,5 @@ Sources:
 [1] Run Length encoding: https://www.geeksforgeeks.org/run-length-encoding/
 [2] How to Map files into Memory: https://www.youtube.com/watch?v=m7E9piHcfr4
 [3] Split String every X characters: https://stackoverflow.com/questions/25022880/c-split-string-every-x-characters
+[4] getopt: https://stackoverflow.com/questions/4796662/how-to-take-integers-as-command-line-arguments
 */
