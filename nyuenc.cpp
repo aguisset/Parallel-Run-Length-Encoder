@@ -36,7 +36,7 @@ typedef struct MappedFile{
 	const char* startAddr;
 }MappedFile;
 
-void slice_by_char(vector<MappedFile> fileList, int split_length);
+void slice_by_char(vector<MappedFile> fileList, int split_length, bool isSeq);
 string compress_string(const char* str, int n);
 MappedFile memory_map_helper(char* file_name);
 vector<MappedFile> build_file_list(char** argv, int argc, const int THREAD_NUM);
@@ -54,14 +54,15 @@ pthread_mutex_t mutexResMap;
 pthread_cond_t condQueue;
 pthread_cond_t condResQueue;
 
-
+queue<Task> seqQueue; // sequential chunks
 queue<Task> taskQueue; // will hold file chunk
 vector<ResTask> resultVec;
 unordered_map<int, ResTask> map; // keep taskId-> ResTask
 int taskCounter = 0;
 int timestamp = 0;
 
-void slice_by_char(vector<MappedFile> fileList, int split_length){
+
+void slice_by_char(vector<MappedFile> fileList, int split_length, bool isSeq){
 	/*Given a list of mapped file object (startAddr and size of each file mmaped) break each files into chunks of split length*/
 	// slice by X char the input string [3]
 	timestamp = 0;
@@ -78,7 +79,8 @@ void slice_by_char(vector<MappedFile> fileList, int split_length){
 				//.slice = str.substr(i*split_length, split_length)
 			};
 			
-			submitTask(task);
+			if(isSeq) seqQueue.push(task);
+			else submitTask(task); // multi threaded
 			
 		}
 
@@ -90,7 +92,8 @@ void slice_by_char(vector<MappedFile> fileList, int split_length){
 				.length = static_cast<int>(mappedFile.size % split_length)
 				//.slice = str.substr(split_length * substring_count)
 			};
-			submitTask(task);
+			if(isSeq) seqQueue.push(task);
+			else submitTask(task);
 			substring_count++;
 		}
 	}
@@ -105,8 +108,8 @@ string compress_string(const char* str, int n){
 	string res = "";
     for (int i = 0; i < n; i++) {
         // Count occurrences of current character
-        unsigned char count = 1;
-        //int count = 1; // for easier debug
+        //unsigned char count = 1;
+        int count = 1; // for easier debug
         while (i < n - 1 && str[i] == str[i + 1]) {
             count++;
             i++;
@@ -115,8 +118,8 @@ string compress_string(const char* str, int n){
         //cout << count;
         //cout << count;
  		res+= str[i];
- 		res+= count;
- 		//res+= to_string(count); // add to string when having int for debug
+ 		//res+= count;
+ 		res+= to_string(count); // add to string when having int for debug
 
  		//res+=count;
     }
@@ -194,22 +197,22 @@ void submitTask(Task task){
 	// Submit a new slice of string to the queue
 	pthread_mutex_lock(&mutexQueue);// to avoid race conditions
 	taskQueue.push(task);
-	pthread_mutex_unlock(&mutexQueue);
 	pthread_cond_signal(&condQueue);
+	pthread_mutex_unlock(&mutexQueue);
 }
 void submitRes(ResTask subRes){
 	pthread_mutex_lock(&mutexResMap);// to avoid race conditions
 	//resultVec.push_back(subRes);
 	map[subRes.taskId] = subRes;
 	//cout << subRes.taskId << " " << map[subRes.taskId].encStr << endl; // for debug
-	pthread_mutex_unlock(&mutexResMap);
 	pthread_cond_signal(&condResQueue);
+	pthread_mutex_unlock(&mutexResMap);
 }
 void* start_thread(void* args){
 	// wait and execute task
 
 	while(1){
-		char* encoded_slice = (char*) malloc(FIXED_SIZE_CHUNKS*sizeof(char)); // at most
+		
 		Task task;
 		ResTask resTask;
 		string slice;
@@ -233,11 +236,10 @@ void* start_thread(void* args){
 string stitch(string str1, string str2){
 	/*concatenate str1 with str2 in a correct encoded format*/
 	string res = "";
-
+	string toStich = "";
 	if(str1.length() == 0) return str2;
 
 	// find start and end to stitch
-
 	int end = 0;
 	int count = 0;
 	for(end = 0; end < str2.length(); end++){
@@ -245,7 +247,9 @@ string stitch(string str1, string str2){
 		if(count > 1) break;
 	}
 
-	string toStich = str2.substr(0, end);
+
+	//if(end < str2.length()) toStich = str2.substr(0, end);
+	toStich = str2.substr(0, end);
 
 	// append to the carry the correct count
 	if((isalpha(str1[0]) && isalpha(toStich[0])) && (str1[0] != toStich[0])){
@@ -255,8 +259,11 @@ string stitch(string str1, string str2){
 	else if(isalpha(str1[0]) && isalpha(toStich[0])){
 		// equal
 		res += str1[0]; // add first char
-		res += str1[1] + str2[1]; // since it is stored as a 1 byte char
-		res+= str2.substr(end); // add the rest
+		int count1 = stoi(str1.substr(1, str1.length()));
+		int count2 = stoi(str2.substr(1,end));
+		res += to_string(count1 + count2);
+		//res += str1[1] + str2[1]; // since it is stored as a 1 byte char
+		res+= str2.substr(end, str2.length()); // add the rest
 	}
 
 	return res;
@@ -267,27 +274,33 @@ void run_sequentially(char** argv, int argc, const int THREAD_NUM){
 	/*Perfom RLE sequentially*/
 	vector<MappedFile> file_list;
 	file_list = build_file_list(argv, argc, THREAD_NUM);
+	slice_by_char(file_list, FIXED_SIZE_CHUNKS, true);
 	string res = "";
 	string carry = "";
-	for(MappedFile file: file_list){
-		string stitched = stitch(carry,compress_string(file.startAddr, file.size));
+
+	while(!seqQueue.empty()){
+		Task task = seqQueue.front();
+		seqQueue.pop();
+		string stitched = stitch(carry,compress_string(task.startAddr, task.length));
 
 		// find last char
 		int lastChar = stitched.length() - 1;
 		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
-		carry = stitched.substr(lastChar, stitched.length()); // add the rest
+		if(lastChar >= 0) carry = stitched.substr(lastChar, stitched.length()); // add the rest
 
+		
 		for(int i = 0; i < lastChar; i++){
 			cout << stitched[i];
+			cout.flush();
 		}
-		cout.flush();
+		
 	}
 
 	if(carry.length() != 0){
-		// carry is not empty just display it
-		cout << carry;
+			// carry is not empty just display it
+			cout << carry;
+			cout.flush();
 	}
-	cout.flush();
 
 	return;
 }
@@ -345,7 +358,7 @@ int main(int argc, char** argv){
 	}
 
 	file_list = build_file_list(argv, argc, THREAD_NUM);
-	slice_by_char(file_list, FIXED_SIZE_CHUNKS);
+	slice_by_char(file_list, FIXED_SIZE_CHUNKS, false);
 
 	while(taskCounter != timestamp){
 		pthread_mutex_lock(&mutexResMap);
@@ -361,10 +374,11 @@ int main(int argc, char** argv){
 		// Update the carry take everything until last char
 		int lastChar = stitched.length() - 1;
 		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
-		carry = stitched.substr(lastChar, stitched.length()); // add the rest
+		if(lastChar >= 0) carry = stitched.substr(lastChar, stitched.length()); // add the rest
 
 		for(int i = 0; i < lastChar; i++){
 			cout << stitched[i];
+			cout.flush();
 		}
 
 		map.erase(taskCounter);
@@ -380,10 +394,11 @@ int main(int argc, char** argv){
 	
 	// Join threads (not required)
 
-	pthread_mutex_destroy(&mutexQueue);
-	pthread_mutex_destroy(&mutexResMap);
-	pthread_cond_destroy(&condQueue);
-	pthread_cond_destroy(&condResQueue);
+	// not required to destroy
+	//pthread_mutex_destroy(&mutexQueue);
+	//pthread_mutex_destroy(&mutexResMap);
+	//pthread_cond_destroy(&condQueue);
+	//pthread_cond_destroy(&condResQueue);
 
 	// free-ing
 
