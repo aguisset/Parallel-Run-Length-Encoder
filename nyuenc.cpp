@@ -12,7 +12,7 @@
 #include <ctype.h>
 #include <pthread.h>
 
-#define BUFFER_SIZE 200
+
 #define FILES_MAX_COUNT 100
 #define FIXED_SIZE_CHUNKS 4000
 
@@ -65,7 +65,8 @@ int timestamp = 0;
 void slice_by_char(vector<MappedFile> fileList, int split_length, bool isSeq){
 	/*Given a list of mapped file object (startAddr and size of each file mmaped) break each files into chunks of split length*/
 	// slice by X char the input string [3]
-	timestamp = 0;
+	
+	
 	for(MappedFile mappedFile: fileList){
 		int substring_count = mappedFile.size / split_length;
 		
@@ -74,24 +75,27 @@ void slice_by_char(vector<MappedFile> fileList, int split_length, bool isSeq){
 
 			Task task = {
 				.taskId = timestamp++,
-				.startAddr = mappedFile.startAddr + i*split_length,
+				.startAddr = mappedFile.startAddr+ (i*split_length),
 				.length = split_length
 				//.slice = str.substr(i*split_length, split_length)
 			};
 			
 			if(isSeq) seqQueue.push(task);
 			else submitTask(task); // multi threaded
-			
 		}
 
 		// if there are leftover characters, create a shorter item at the end
 		if(mappedFile.size % split_length != 0){
+			//debugLeft[currenTask.taskId] = currenTask;// for debug
 			Task task = {
 				.taskId = timestamp++,
 				.startAddr = mappedFile.startAddr + (split_length * substring_count),
 				.length = static_cast<int>(mappedFile.size % split_length)
 				//.slice = str.substr(split_length * substring_count)
 			};
+			//cout << "split_length is: " << split_length << endl; // for deb
+			//cout << "MappedFile.size: " << mappedFile.size << endl; // for deb
+			
 			if(isSeq) seqQueue.push(task);
 			else submitTask(task);
 			substring_count++;
@@ -108,8 +112,8 @@ string compress_string(const char* str, int n){
 	string res = "";
     for (int i = 0; i < n; i++) {
         // Count occurrences of current character
-        //unsigned char count = 1;
-        int count = 1; // for easier debug
+        unsigned char count = 1;
+        //int count = 1; // for easier debug
         while (i < n - 1 && str[i] == str[i + 1]) {
             count++;
             i++;
@@ -117,9 +121,9 @@ string compress_string(const char* str, int n){
         //cout << str[i];
         //cout << count;
         //cout << count;
- 		res+= str[i];
- 		//res+= count;
- 		res+= to_string(count); // add to string when having int for debug
+ 		if(i < n) res+= str[i];
+ 		res+= count;
+ 		//res+= to_string(count); // add to string when having int for debug
 
  		//res+=count;
     }
@@ -129,6 +133,33 @@ string compress_string(const char* str, int n){
     return res; // to convert a string to char*
 }
 
+string compress_string2(const char* str, int start, int n){
+	/* This function writes to stdout the encoded string and returns it for safe keeping [1]*/
+
+	const char* encoded;
+	string res = "";
+    for (int i = start; i < n; i++) {
+        // Count occurrences of current character
+        unsigned char count = 1;
+        //int count = 1; // for easier debug
+        while (i < n - 1 && str[i] == str[i + 1]) {
+            count++;
+            i++;
+        }
+        //cout << str[i];
+        //cout << count;
+        //cout << count;
+ 		if(i < n) res+= str[i];
+ 		res+= static_cast<unsigned char>(count);
+ 		//res+= to_string(count); // add to string when having int for debug
+
+ 		//res+=count;
+    }
+    
+    encoded = res.c_str();
+
+    return res; // to convert a string to char*
+}
 
 MappedFile memory_map_helper(char* file_name){
 	/**
@@ -139,8 +170,6 @@ MappedFile memory_map_helper(char* file_name){
 	off_t file_size = 0;
 	int fd;
 	struct stat sb;
-	char buffer[BUFFER_SIZE];
-	memset(buffer, '\0', BUFFER_SIZE);
 
 	// open the file
 	if((fd = open(file_name, O_RDWR)) < 0){
@@ -170,6 +199,34 @@ MappedFile memory_map_helper(char* file_name){
 	//munmap(&file_in_memory, sb.st_size);
 	close(fd);
 	return mappedFile;
+
+}
+
+string stitch(string carry, string str2){
+	/*concatenate str1 with str2 in a correct encoded format*/
+	string res = "";
+	
+	if(carry.length() == 0) return str2;
+
+	// find start and end to stitch
+	
+	// append to the carry the correct count
+	if(carry[0] != str2[0]){
+		// Not same character between carry and toStich (ex: a2 and b2) => we can safely concatenate both
+		res += carry;
+		res += str2;
+	}
+	else{
+		// equal
+		res += carry[0]; // add first char
+		//int count1 = stoi(str1.substr(1, str1.length()));
+		//int count2 = stoi(str2.substr(1,end));
+		//res += to_string(count1 + count2);
+		res += carry[1] + str2[1]; // since it is stored as a 1 byte char
+		res += str2.substr(2, str2.length()); // add the rest
+	}
+
+	return res;
 
 }
 
@@ -233,78 +290,66 @@ void* start_thread(void* args){
 	}
 }
 
-string stitch(string str1, string str2){
-	/*concatenate str1 with str2 in a correct encoded format*/
-	string res = "";
-	string toStich = "";
-	if(str1.length() == 0) return str2;
-
-	// find start and end to stitch
-	int end = 0;
-	int count = 0;
-	for(end = 0; end < str2.length(); end++){
-		if(isalpha(str2[end])) count++;
-		if(count > 1) break;
+void run_sequentially_old(char** argv, int argc, int THREAD_NUM){
+	
+	string str = "";
+	for(int i = 1; i < argc; i++){
+		str += memory_map_helper(argv[i]).startAddr;
 	}
 
-
-	//if(end < str2.length()) toStich = str2.substr(0, end);
-	toStich = str2.substr(0, end);
-
-	// append to the carry the correct count
-	if((isalpha(str1[0]) && isalpha(toStich[0])) && (str1[0] != toStich[0])){
-		// Not same character between carry and toStich (ex: a2 and b2) => we can safely concatenate both
-		res += (str1 + str2);
-	}
-	else if(isalpha(str1[0]) && isalpha(toStich[0])){
-		// equal
-		res += str1[0]; // add first char
-		int count1 = stoi(str1.substr(1, str1.length()));
-		int count2 = stoi(str2.substr(1,end));
-		res += to_string(count1 + count2);
-		//res += str1[1] + str2[1]; // since it is stored as a 1 byte char
-		res+= str2.substr(end, str2.length()); // add the rest
-	}
-
-	return res;
-
-}
-
-void run_sequentially(char** argv, int argc, const int THREAD_NUM){
-	/*Perfom RLE sequentially*/
-	vector<MappedFile> file_list;
-	file_list = build_file_list(argv, argc, THREAD_NUM);
-	slice_by_char(file_list, FIXED_SIZE_CHUNKS, true);
-	string res = "";
-	string carry = "";
-
-	while(!seqQueue.empty()){
-		Task task = seqQueue.front();
-		seqQueue.pop();
-		string stitched = stitch(carry,compress_string(task.startAddr, task.length));
-
-		// find last char
-		int lastChar = stitched.length() - 1;
-		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
-		if(lastChar >= 0) carry = stitched.substr(lastChar, stitched.length()); // add the rest
-
-		
-		for(int i = 0; i < lastChar; i++){
-			cout << stitched[i];
-			cout.flush();
-		}
-		
-	}
-
-	if(carry.length() != 0){
-			// carry is not empty just display it
-			cout << carry;
-			cout.flush();
-	}
-
+	cout << compress_string(str.c_str(), str.length());
+	
 	return;
 }
 
+void run_sequentially(char ** argv, int argc, const int THREAD_NUM){
+	vector<MappedFile> fileList = build_file_list(argv, argc, THREAD_NUM);
+	slice_by_char(fileList, FIXED_SIZE_CHUNKS, true);
+	int j = 1;
+	string carry = "";
+	string cat = "";
+	while(!seqQueue.empty()){
+		Task task = seqQueue.front();
+		string enc = compress_string(task.startAddr, task.length);
+		
+		/*
+		printf("Sliced %d\n", j);
+		for(int i = 0; i < task.length; i++)
+			cout << task.startAddr[i];
+		*/
+
+		/*
+		cout << " with a length " << task.length;
+		cout << " Encoded: " << enc;
+		cout << endl;
+		cout<< endl;
+		*/
+
+		/*
+		cout << "===== stitching phase======" << endl;
+		cout << "carry = " << carry << endl;
+		*/
+		cat = stitch(carry,enc);
+		
+		/*
+		cout << j << "-th Stitched encoded: " << cat << endl;
+		cout << endl;
+
+		cout << "What we display: " << cat.substr(0, cat.length() -2) << endl;
+		*/
+		cout << cat.substr(0, cat.length() -2);
+		cout.flush();
+		carry = cat.substr(cat.length() -2);
+		j++;
+		seqQueue.pop();
+	}
+
+	if(carry.length() != 0){
+		//cout << "Display remaining carry: " << endl;
+		cout << carry;
+		cout.flush();
+	}
+}
 int get_thread_number_from_cmdl(char** argv, int argc){
 	/*Retrives command line options [4]*/
     int opt;
@@ -356,11 +401,11 @@ int main(int argc, char** argv){
 			exit(1);
 		}
 	}
-
+	// smaller on 
 	file_list = build_file_list(argv, argc, THREAD_NUM);
 	slice_by_char(file_list, FIXED_SIZE_CHUNKS, false);
 
-	while(taskCounter != timestamp){
+	while(taskCounter < timestamp){
 		pthread_mutex_lock(&mutexResMap);
 		while(map.find(taskCounter) == map.end()){ // Wait until the element with id equal to taskCounter is added in the map
 			pthread_cond_wait(&condResQueue, &mutexResMap);
@@ -371,26 +416,27 @@ int main(int argc, char** argv){
 		// stitch with carry
 		string stitched = stitch(carry, resTask.encStr);
 		
+		// what we display
+		cout << stitched.substr(0, stitched.length() - 2);
+		cout.flush();
+
 		// Update the carry take everything until last char
-		int lastChar = stitched.length() - 1;
-		while(lastChar >= 0 && !isalpha(stitched[lastChar])) lastChar--; // find last char
-		if(lastChar >= 0) carry = stitched.substr(lastChar, stitched.length()); // add the rest
-
-		for(int i = 0; i < lastChar; i++){
-			cout << stitched[i];
-			cout.flush();
-		}
-
+		carry = stitched.substr(stitched.length() -2); // add the rest
+	
+		cout.flush();
 		map.erase(taskCounter);
 		taskCounter++;
 		pthread_mutex_unlock(&mutexResMap);
 	}
 
+	
 	if(carry.length() != 0){
 		// carry is not empty just display it
 		cout << carry;
 	}
-	cout.flush();
+	
+
+	//cout.flush();
 	
 	// Join threads (not required)
 
